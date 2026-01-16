@@ -11,17 +11,15 @@ class UsuarioAdministradorSeeder extends Seeder
 {
     public function run(): void
     {
-       
         $email = 'stivenmadrid6@gmail.com';
         $password = 'THUU79**++R';
 
-     
-        $rolAdministrador = Role::firstOrCreate(
-            ['name' => 'Administrador'],
-            ['descripcion' => 'Rol con acceso total al sistema']
-        );
+        // 1) Crear o buscar rol Administrador (SOLO name)
+        $rolAdministrador = Role::firstOrCreate([
+            'name' => 'Administrador',
+        ]);
 
-        
+        // 2) Crear o buscar usuario
         $user = User::firstOrCreate(
             ['email' => $email],
             [
@@ -31,11 +29,11 @@ class UsuarioAdministradorSeeder extends Seeder
             ]
         );
 
-        
+        // 3) Asignar rol si no lo tiene
         if (!$user->roles()->where('roles.id', $rolAdministrador->id)->exists()) {
             $user->roles()->attach($rolAdministrador->id);
         }
 
-        $this->command->info(' Usuario Administrador creado/actualizado correctamente');
+        $this->command->info('✅ Usuario Administrador creado/actualizado y rol asignado.');
     }
 }
