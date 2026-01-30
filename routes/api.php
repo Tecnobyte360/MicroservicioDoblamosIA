@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\ApisIA\PoliticasLogisticas;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -14,7 +15,7 @@ Route::post('/logout', [LoginSanctumController::class, 'logout'])->middleware('a
 
 Route::middleware('auth:sanctum')->group(function () {
 
-    Route::get('/user', fn (Request $request) => $request->user());
+    Route::get('/user', fn(Request $request) => $request->user());
 
     // Usuarios
     Route::get('/usuarios', [UsuariosController::class, 'index']);
@@ -23,5 +24,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/usuarios/{id}/password', [UsuariosController::class, 'updatePassword']);
     Route::patch('/usuarios/{id}/estado', [UsuariosController::class, 'toggleEstado']);
     Route::get('/sap/inventario-disponible', [InventarioDisponibleController::class, 'index']);
-     Route::get('/sap/inventario-disponible/query', [InventarioDisponibleController::class, 'query']);
+    Route::get('/sap/inventario-disponible/query', [InventarioDisponibleController::class, 'query']);
+    Route::get('/ia/politicasVentas', [PoliticasLogisticas::class, 'query']);
 });
