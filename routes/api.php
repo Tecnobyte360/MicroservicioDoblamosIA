@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Apisdoblamos\Autenticacion\LoginSanctumController;
 use App\Http\Controllers\Apisdoblamos\Autenticacion\UsuariosController;
 use App\Http\Controllers\Api\SAPDoblamos\InventarioDisponibleController;
-
+use App\Http\Controllers\WolkvoxWebhookController;
 
 Route::post('/login', [LoginSanctumController::class, 'login']);
 Route::post('/logout', [LoginSanctumController::class, 'logout'])->middleware('auth:sanctum');
@@ -27,3 +27,5 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/sap/inventario-disponible/query', [InventarioDisponibleController::class, 'query']);
     Route::get('/ia/politicasVentas', [PoliticasLogisticas::class, 'query']);
 });
+
+Route::get('/wolkvox/webhook', [WolkvoxWebhookController::class, 'handle']);
