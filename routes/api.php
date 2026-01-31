@@ -19,7 +19,8 @@ use App\Http\Controllers\WolkvoxWebhookController;
 Route::post('/login', [LoginSanctumController::class, 'login']);
 
 // 👉 ESTA ES LA QUE USAS EN "LINK DE INTEGRACIÓN" DE WOLKVOX
-Route::get('/wolkvox/view', [WolkvoxWebhookController::class, 'handle']);
+Route::post('/wolkvox/webhook', [WolkvoxWebhookController::class, 'handle'])
+    ->name('wolkvox.webhook');
 
 /*
 |--------------------------------------------------------------------------
