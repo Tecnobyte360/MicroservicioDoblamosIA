@@ -11,6 +11,7 @@ use App\Http\Controllers\WolkvoxWebhookController;
 
 Route::post('/login', [LoginSanctumController::class, 'login']);
 Route::post('/logout', [LoginSanctumController::class, 'logout'])->middleware('auth:sanctum');
+Route::get('/wolkvox/webhook', [WolkvoxWebhookController::class, 'handle']);
 
 
 Route::middleware('auth:sanctum')->group(function () {
@@ -28,4 +29,3 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/ia/politicasVentas', [PoliticasLogisticas::class, 'query']);
 });
 
-Route::get('/wolkvox/webhook', [WolkvoxWebhookController::class, 'handle']);
