@@ -4,9 +4,8 @@ namespace App\Http\Controllers\Api\SAPDoblamos;
 
 use App\Http\Controllers\Controller;
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
 use Throwable;
 
 class InventarioDisponibleController extends Controller
@@ -24,13 +23,13 @@ class InventarioDisponibleController extends Controller
                 'mode'    => 'all',
                 'total'   => $inventario->count(),
                 'data'    => $inventario->values(),
-            ], 200);
+            ]);
 
         } catch (Throwable $e) {
             return response()->json([
-                'ok'      => false,
-                'message' => $e->getMessage(),
-            ], 500);
+                'ok' => false,
+                'error' => $e->getMessage()
+            ],500);
         }
     }
 
@@ -48,59 +47,59 @@ class InventarioDisponibleController extends Controller
                 'query'   => $sentQuery,
                 'total'   => $inventario->count(),
                 'data'    => $inventario->values(),
-            ], 200);
+            ]);
 
         } catch (Throwable $e) {
             return response()->json([
-                'ok'      => false,
-                'message' => $e->getMessage(),
-            ], 500);
+                'ok' => false,
+                'error' => $e->getMessage()
+            ],500);
         }
     }
 
     /**
      * SIN FILTROS
      */
-    public function consultarInventarioSAP()
+    private function consultarInventarioSAP()
     {
-        [$client, $sapBaseUrl, $cookie] = $this->loginAndBuildClient();
+        [$client,$sapBaseUrl,$cookie] = $this->loginAndBuildClient();
 
         $response = $client->get(
-            $sapBaseUrl . '/sml.svc/INVENTARIO_DISPONIBLE_IA',
+            $sapBaseUrl.'/sml.svc/INVENTARIO_DISPONIBLE_IA',
             [
-                'headers' => [
-                    'Cookie'       => $cookie,
-                    'Accept'       => 'application/json',
-                    'Content-Type' => 'application/json',
-                ],
+                'headers'=>[
+                    'Cookie'=>$cookie,
+                    'Accept'=>'application/json'
+                ]
             ]
         );
 
-        $data = json_decode((string) $response->getBody(), true);
+        $data = json_decode($response->getBody(),true);
 
         return collect($data['value']);
     }
 
     /**
-     * CON QUERY ODATA + q inteligente
+     * CON FILTROS
      */
-    public function consultarInventarioSAPConQuery(Request $request)
+    private function consultarInventarioSAPConQuery(Request $request)
     {
-        [$client, $sapBaseUrl, $cookie] = $this->loginAndBuildClient();
+        [$client,$sapBaseUrl,$cookie] = $this->loginAndBuildClient();
 
         $odataParams = $this->buildODataQueryParams($request);
-        $queryString = http_build_query($odataParams, '', '&', PHP_QUERY_RFC3986);
 
-        $url = $sapBaseUrl . '/sml.svc/INVENTARIO_DISPONIBLE_IA' . ($queryString ? '?' . $queryString : '');
+        $queryString = http_build_query($odataParams,'','&',PHP_QUERY_RFC3986);
 
-        $response = $client->get($url, [
-            'headers' => [
-                'Cookie' => $cookie,
-                'Accept' => 'application/json',
-            ],
+        $url = $sapBaseUrl.'/sml.svc/INVENTARIO_DISPONIBLE_IA'.($queryString ? '?'.$queryString : '');
+
+        $response = $client->get($url,[
+            'headers'=>[
+                'Cookie'=>$cookie,
+                'Accept'=>'application/json'
+            ]
         ]);
 
-        $data = json_decode((string) $response->getBody(), true);
+        $data = json_decode($response->getBody(),true);
 
         return collect($data['value']);
     }
@@ -110,63 +109,67 @@ class InventarioDisponibleController extends Controller
      */
     private function loginAndBuildClient(): array
     {
-        $sapBaseUrl   = rtrim(env('SAP_SL_BASE_URL'), '/');
+        $sapBaseUrl   = rtrim(env('SAP_SL_BASE_URL'),'/');
         $sapCompanyDB = env('SAP_SL_COMPANY_DB');
         $sapUsername  = env('SAP_SL_USERNAME');
         $sapPassword  = env('SAP_SL_PASSWORD');
 
         $client = new Client([
-            'timeout' => 30,
-            'verify'  => false,
+            'timeout'=>30,
+            'verify'=>false
         ]);
 
-        $loginResponse = $client->post($sapBaseUrl . '/Login', [
-            'json' => [
-                'CompanyDB' => $sapCompanyDB,
-                'UserName'  => $sapUsername,
-                'Password'  => $sapPassword,
-            ],
+        $loginResponse = $client->post($sapBaseUrl.'/Login',[
+            'json'=>[
+                'CompanyDB'=>$sapCompanyDB,
+                'UserName'=>$sapUsername,
+                'Password'=>$sapPassword
+            ]
         ]);
 
-        $loginData = json_decode((string) $loginResponse->getBody(), true);
+        $loginData = json_decode($loginResponse->getBody(),true);
 
-        $cookie = 'B1SESSION=' . $loginData['SessionId'] . '; ROUTEID=.node1';
+        $cookie = 'B1SESSION='.$loginData['SessionId'].'; ROUTEID=.node1';
 
-        return [$client, $sapBaseUrl, $cookie];
+        return [$client,$sapBaseUrl,$cookie];
     }
 
     /**
-     * 🔥 CONSTRUCCIÓN DEL QUERY INTELIGENTE
+     * 🔥 QUERY INTELIGENTE
      */
     private function buildODataQueryParams(Request $request): array
     {
         $params = [];
 
-        // SI ENVÍAN $filter manual, se respeta
-        if ($request->query('$filter')) {
+        if($request->query('$filter')){
             $params['$filter'] = $request->query('$filter');
         }
 
-        // 🔥 BÚSQUEDA INTELIGENTE POR PALABRAS
-        $q = $this->normalizeSearchText((string) $request->query('q', ''));
+        $q = $this->normalizeSearchText((string)$request->query('q',''));
 
-        if ($q !== '' && empty($params['$filter'])) {
+        if($q !== '' && empty($params['$filter'])){
 
-            $tokens = preg_split('/\s+/', $q);
+            $tokens = preg_split('/\s+/',$q);
 
             $parts = [];
 
-            foreach ($tokens as $token) {
+            foreach($tokens as $token){
+
+                if(strlen($token) < 2) continue;
 
                 $token = $this->singularizeToken($token);
 
-                $tokenSafe = str_replace("'", "''", $token);
+                $tokenSafe = str_replace("'","''",$token);
 
-                $parts[] = "(contains(DescripcionArticulo,'{$tokenSafe}') or contains(ItemCode,'{$tokenSafe}'))";
+                $parts[] = "(
+                    contains(DescripcionArticulo,'{$tokenSafe}')
+                    or contains(ItemCode,'{$tokenSafe}')
+                    or contains(GrupoDOB,'{$tokenSafe}')
+                )";
             }
 
-            if (!empty($parts)) {
-                $params['$filter'] = implode(' and ', $parts);
+            if(!empty($parts)){
+                $params['$filter'] = implode(' and ',$parts);
             }
         }
 
@@ -174,30 +177,37 @@ class InventarioDisponibleController extends Controller
     }
 
     /**
-     * 🔥 NORMALIZA TEXTO (lámina -> LAMINA)
+     * 🔥 NORMALIZA TEXTO (SUPER IMPORTANTE)
      */
     private function normalizeSearchText(string $text): string
     {
         $text = trim($text);
 
-        if ($text === '') return '';
+        if($text === '') return '';
 
-        $text = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $text) ?: $text;
-        $text = mb_strtoupper($text, 'UTF-8');
-        $text = preg_replace('/\s+/', ' ', $text);
+        // quitar tildes
+        $text = iconv('UTF-8','ASCII//TRANSLIT//IGNORE',$text) ?: $text;
+
+        // mayúsculas
+        $text = mb_strtoupper($text,'UTF-8');
+
+        // quitar símbolos raros
+        $text = preg_replace('/[^A-Z0-9]+/',' ',$text);
+
+        // limpiar espacios
+        $text = preg_replace('/\s+/',' ',$text);
 
         return trim($text);
     }
 
     /**
-     * 🔥 PLURAL SIMPLE (LAMINAS -> LAMINA)
+     * 🔥 PLURAL SIMPLE
      */
     private function singularizeToken(string $token): string
     {
-        if (mb_strlen($token) > 3 && mb_substr($token, -1) === 'S') {
-            return mb_substr($token, 0, -1);
+        if(strlen($token)>3 && substr($token,-1)==='S'){
+            return substr($token,0,-1);
         }
-
         return $token;
     }
 }
