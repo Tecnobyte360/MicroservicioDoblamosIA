@@ -27,9 +27,9 @@ class InventarioDisponibleController extends Controller
 
         } catch (Throwable $e) {
             return response()->json([
-                'ok' => false,
+                'ok'    => false,
                 'error' => $e->getMessage()
-            ],500);
+            ], 500);
         }
     }
 
@@ -51,9 +51,9 @@ class InventarioDisponibleController extends Controller
 
         } catch (Throwable $e) {
             return response()->json([
-                'ok' => false,
+                'ok'    => false,
                 'error' => $e->getMessage()
-            ],500);
+            ], 500);
         }
     }
 
@@ -62,19 +62,19 @@ class InventarioDisponibleController extends Controller
      */
     private function consultarInventarioSAP()
     {
-        [$client,$sapBaseUrl,$cookie] = $this->loginAndBuildClient();
+        [$client, $sapBaseUrl, $cookie] = $this->loginAndBuildClient();
 
         $response = $client->get(
-            $sapBaseUrl.'/sml.svc/INVENTARIO_DISPONIBLE_IA',
+            $sapBaseUrl . '/sml.svc/INVENTARIO_DISPONIBLE_IA',
             [
-                'headers'=>[
-                    'Cookie'=>$cookie,
-                    'Accept'=>'application/json'
+                'headers' => [
+                    'Cookie' => $cookie,
+                    'Accept' => 'application/json'
                 ]
             ]
         );
 
-        $data = json_decode($response->getBody(),true);
+        $data = json_decode($response->getBody(), true);
 
         return collect($data['value']);
     }
@@ -84,22 +84,22 @@ class InventarioDisponibleController extends Controller
      */
     private function consultarInventarioSAPConQuery(Request $request)
     {
-        [$client,$sapBaseUrl,$cookie] = $this->loginAndBuildClient();
+        [$client, $sapBaseUrl, $cookie] = $this->loginAndBuildClient();
 
         $odataParams = $this->buildODataQueryParams($request);
 
-        $queryString = http_build_query($odataParams,'','&',PHP_QUERY_RFC3986);
+        $queryString = http_build_query($odataParams, '', '&', PHP_QUERY_RFC3986);
 
-        $url = $sapBaseUrl.'/sml.svc/INVENTARIO_DISPONIBLE_IA'.($queryString ? '?'.$queryString : '');
+        $url = $sapBaseUrl . '/sml.svc/INVENTARIO_DISPONIBLE_IA' . ($queryString ? '?' . $queryString : '');
 
-        $response = $client->get($url,[
-            'headers'=>[
-                'Cookie'=>$cookie,
-                'Accept'=>'application/json'
+        $response = $client->get($url, [
+            'headers' => [
+                'Cookie' => $cookie,
+                'Accept' => 'application/json'
             ]
         ]);
 
-        $data = json_decode($response->getBody(),true);
+        $data = json_decode($response->getBody(), true);
 
         return collect($data['value']);
     }
@@ -109,57 +109,68 @@ class InventarioDisponibleController extends Controller
      */
     private function loginAndBuildClient(): array
     {
-        $sapBaseUrl   = rtrim(env('SAP_SL_BASE_URL'),'/');
+        $sapBaseUrl   = rtrim(env('SAP_SL_BASE_URL'), '/');
         $sapCompanyDB = env('SAP_SL_COMPANY_DB');
         $sapUsername  = env('SAP_SL_USERNAME');
         $sapPassword  = env('SAP_SL_PASSWORD');
 
         $client = new Client([
-            'timeout'=>30,
-            'verify'=>false
+            'timeout' => 30,
+            'verify'  => false
         ]);
 
-        $loginResponse = $client->post($sapBaseUrl.'/Login',[
-            'json'=>[
-                'CompanyDB'=>$sapCompanyDB,
-                'UserName'=>$sapUsername,
-                'Password'=>$sapPassword
+        $loginResponse = $client->post($sapBaseUrl . '/Login', [
+            'json' => [
+                'CompanyDB' => $sapCompanyDB,
+                'UserName'  => $sapUsername,
+                'Password'  => $sapPassword
             ]
         ]);
 
-        $loginData = json_decode($loginResponse->getBody(),true);
+        $loginData = json_decode($loginResponse->getBody(), true);
 
-        $cookie = 'B1SESSION='.$loginData['SessionId'].'; ROUTEID=.node1';
+        $cookie = 'B1SESSION=' . $loginData['SessionId'] . '; ROUTEID=.node1';
 
-        return [$client,$sapBaseUrl,$cookie];
+        return [$client, $sapBaseUrl, $cookie];
     }
 
     /**
-     * 🔥 QUERY INTELIGENTE
+     * 🔥 QUERY INTELIGENTE + FILTROS POR CAMPOS
+     *
+     * Soporta:
+     * - q=texto libre
+     * - Campo=valor (exacto)    ej: GrupoDOB=04
+     * - Campo_like=valor        ej: ItemCode_like=LAM
+     * - Campo_min / Campo_max   ej: PrecioVenta_min=100000&PrecioVenta_max=300000
+     *
+     * Campos permitidos:
+     * ItemCode, DescripcionArticulo, GrupoDOB, StockTotal, PesoUnitario,
+     * PrecioVenta, PVP, Especial, Minorista, Mayorista, id__
      */
     private function buildODataQueryParams(Request $request): array
     {
         $params = [];
 
-        if($request->query('$filter')){
+        // Si mandan $filter manual, se respeta
+        if ($request->query('$filter')) {
             $params['$filter'] = $request->query('$filter');
+            return $params;
         }
 
-        $q = $this->normalizeSearchText((string)$request->query('q',''));
+        $filters = [];
 
-        if($q !== '' && empty($params['$filter'])){
+        // 1) 🔎 Búsqueda libre por q
+        $q = $this->normalizeSearchText((string) $request->query('q', ''));
 
-            $tokens = preg_split('/\s+/',$q);
+        if ($q !== '') {
+            $tokens = preg_split('/\s+/', $q);
+            $parts  = [];
 
-            $parts = [];
-
-            foreach($tokens as $token){
-
-                if(strlen($token) < 2) continue;
+            foreach ($tokens as $token) {
+                if (strlen($token) < 2) continue;
 
                 $token = $this->singularizeToken($token);
-
-                $tokenSafe = str_replace("'","''",$token);
+                $tokenSafe = str_replace("'", "''", $token);
 
                 $parts[] = "(
                     contains(DescripcionArticulo,'{$tokenSafe}')
@@ -168,45 +179,90 @@ class InventarioDisponibleController extends Controller
                 )";
             }
 
-            if(!empty($parts)){
-                $params['$filter'] = implode(' and ',$parts);
+            if (!empty($parts)) {
+                $filters[] = implode(' and ', $parts);
             }
+        }
+
+        // 2) 🎯 Filtros por campos (exacto / like / min / max)
+        $allowedFields = [
+            'ItemCode'            => 'string',
+            'DescripcionArticulo' => 'string',
+            'GrupoDOB'            => 'string',
+            'StockTotal'          => 'number',
+            'PesoUnitario'        => 'number',
+            'PrecioVenta'         => 'number',
+            'PVP'                 => 'number',
+            'Especial'            => 'number',
+            'Minorista'           => 'number',
+            'Mayorista'           => 'number',
+            'id__'                => 'number',
+        ];
+
+        foreach ($allowedFields as $field => $type) {
+
+            // Exacto: Campo=valor
+            $val = $request->query($field);
+            if ($val !== null && $val !== '') {
+                if ($type === 'number') {
+                    $filters[] = "{$field} eq " . (float) $val;
+                } else {
+                    $v = str_replace("'", "''", (string) $val);
+                    $filters[] = "{$field} eq '{$v}'";
+                }
+            }
+
+            // Like: Campo_like=valor
+            $valLike = $request->query($field . '_like');
+            if ($valLike !== null && $valLike !== '') {
+                $v = $this->normalizeSearchText((string) $valLike); // normaliza igual que q
+                $v = str_replace("'", "''", $v);
+                $filters[] = "contains({$field},'{$v}')";
+            }
+
+            // Min: Campo_min
+            $valMin = $request->query($field . '_min');
+            if ($valMin !== null && $valMin !== '') {
+                $filters[] = "{$field} ge " . (float) $valMin;
+            }
+
+            // Max: Campo_max
+            $valMax = $request->query($field . '_max');
+            if ($valMax !== null && $valMax !== '') {
+                $filters[] = "{$field} le " . (float) $valMax;
+            }
+        }
+
+        if (!empty($filters)) {
+            $params['$filter'] = implode(' and ', $filters);
         }
 
         return $params;
     }
 
     /**
-     * 🔥 NORMALIZA TEXTO (SUPER IMPORTANTE)
+     * 🔥 NORMALIZA TEXTO (tildes, mayúsculas, símbolos)
      */
     private function normalizeSearchText(string $text): string
     {
         $text = trim($text);
+        if ($text === '') return '';
 
-        if($text === '') return '';
-
-        // quitar tildes
-        $text = iconv('UTF-8','ASCII//TRANSLIT//IGNORE',$text) ?: $text;
-
-        // mayúsculas
-        $text = mb_strtoupper($text,'UTF-8');
-
-        // quitar símbolos raros
-        $text = preg_replace('/[^A-Z0-9]+/',' ',$text);
-
-        // limpiar espacios
-        $text = preg_replace('/\s+/',' ',$text);
+        $text = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $text) ?: $text;
+        $text = mb_strtoupper($text, 'UTF-8');
+        $text = preg_replace('/[^A-Z0-9]+/', ' ', $text);
+        $text = preg_replace('/\s+/', ' ', $text);
 
         return trim($text);
     }
 
     /**
-     * 🔥 PLURAL SIMPLE
+     * 🔥 PLURAL SIMPLE (LAMINAS -> LAMINA)
      */
     private function singularizeToken(string $token): string
     {
-        if(strlen($token)>3 && substr($token,-1)==='S'){
-            return substr($token,0,-1);
+        if (strlen($token) > 3 && substr($token, -1) === 'S') {
+            return substr($token, 0, -1);
         }
         return $token;
     }
