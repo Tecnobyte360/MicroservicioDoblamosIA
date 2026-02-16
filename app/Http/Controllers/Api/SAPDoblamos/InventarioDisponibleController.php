@@ -43,10 +43,10 @@ class InventarioDisponibleController extends Controller
                 'mode'    => $request->query('q') ? 'search' : 'filtered_query',
                 'query'   => [
                     // 👇 esto es SOLO para debug legible (sin +)
-                    'raw_q'          => $request->query('q'),
-                    'normalized_q'   => $odataParams['_debug_normalized_q'] ?? null,
-                    'tokens'         => $odataParams['_debug_tokens'] ?? [],
-                    '$filter'        => $odataParams['$filter'] ?? null,
+                    'raw_q'        => $request->query('q'),
+                    'normalized_q' => $odataParams['_debug_normalized_q'] ?? null,
+                    'tokens'       => $odataParams['_debug_tokens'] ?? [],
+                    '$filter'      => $odataParams['$filter'] ?? null,
                 ],
                 'total'   => $inventario->count(),
                 'data'    => $inventario->values(),
@@ -156,7 +156,11 @@ class InventarioDisponibleController extends Controller
         // 1) 🔎 Búsqueda libre por q (limpia + stopwords + join AND/OR)
         // ==========================================================
         $rawQ = (string) $request->query('q', '');
-        $q    = $this->normalizeSearchText($rawQ);
+
+        // ✅ Extra blindaje: por si llega q con + sin decodificar
+        $rawQ = str_replace('+', ' ', $rawQ);
+
+        $q = $this->normalizeSearchText($rawQ);
 
         $tokens = [];
         if ($q !== '') {
@@ -223,6 +227,7 @@ class InventarioDisponibleController extends Controller
             // Like: Campo_like=valor
             $valLike = $request->query($field . '_like');
             if ($valLike !== null && $valLike !== '') {
+                // ✅ aquí también quedas cubierto porque normaliza quita + si apareciera
                 $v = $this->normalizeSearchText((string) $valLike);
                 $v = str_replace("'", "''", $v);
                 $filters[] = "contains({$field},'{$v}')";
@@ -254,16 +259,26 @@ class InventarioDisponibleController extends Controller
 
     /**
      * 🔥 NORMALIZA TEXTO (tildes, mayúsculas, símbolos)
+     * ✅ Incluye blindaje para reemplazar + por espacio.
      */
     private function normalizeSearchText(string $text): string
     {
         $text = trim($text);
         if ($text === '') return '';
 
-        // Ojo: el + NO llega aquí, Laravel ya lo convierte a espacio.
+        // ✅ por si llega + literal desde alguna capa externa
+        $text = str_replace('+', ' ', $text);
+
+        // Quitar tildes / caracteres raros
         $text = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $text) ?: $text;
+
+        // Mayúsculas
         $text = mb_strtoupper($text, 'UTF-8');
+
+        // Solo letras y números
         $text = preg_replace('/[^A-Z0-9]+/', ' ', $text);
+
+        // Espacios duplicados
         $text = preg_replace('/\s+/', ' ', $text);
 
         return trim($text);
