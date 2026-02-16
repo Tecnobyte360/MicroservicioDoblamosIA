@@ -1,4 +1,4 @@
-¿<?php
+<?php
 
 namespace App\Http\Controllers\Api\SAPDoblamos;
 
@@ -34,54 +34,22 @@ class InventarioDisponibleController extends Controller
     public function query(Request $request): JsonResponse
     {
         try {
-            // 1) Construir intentos (filtros) en cascada
-            $attempts = $this->buildODataAttempts($request);
-
-            // 2) Ejecutar intentos hasta que alguno tenga resultados
-            $result = null;
-            $used   = null;
-
-            foreach ($attempts as $idx => $odataParams) {
-                $data = $this->consultarInventarioSAPConQuery($odataParams);
-
-                if ($data->count() > 0) {
-                    $result = $data;
-                    $used   = [
-                        'attempt' => $idx + 1,
-                        'strategy'=> $odataParams['_strategy'] ?? 'unknown',
-                        '$filter' => $odataParams['$filter'] ?? null,
-                    ];
-                    break;
-                }
-            }
-
-            // 3) Si por alguna razón TODO da 0, igual responde algo (último recurso)
-            if ($result === null) {
-                $fallback = $this->consultarInventarioSAPConQuery([
-                    '$top'    => '50',
-                    '$orderby'=> 'StockTotal desc',
-                    '$filter' => 'StockTotal ge 1'
-                ]);
-
-                $result = $fallback;
-                $used = [
-                    'attempt'  => 'fallback',
-                    'strategy' => 'stock_desc',
-                    '$filter'  => 'StockTotal ge 1',
-                ];
-            }
+            $odataParams = $this->buildODataQueryParams($request); // <-- construye filter limpio
+            $inventario  = $this->consultarInventarioSAPConQuery($odataParams);
 
             return response()->json([
                 'ok'      => true,
                 'service' => 'MicroServicioDoblamosIA',
                 'mode'    => $request->query('q') ? 'search' : 'filtered_query',
-                'used'    => $used,
-                'debug'   => [
-                    'raw_q'        => $request->query('q'),
-                    'normalized_q' => $this->normalizeSearchText((string)$request->query('q','')),
+                'query'   => [
+                    // 👇 esto es SOLO para debug legible (sin +)
+                    'raw_q'          => $request->query('q'),
+                    'normalized_q'   => $odataParams['_debug_normalized_q'] ?? null,
+                    'tokens'         => $odataParams['_debug_tokens'] ?? [],
+                    '$filter'        => $odataParams['$filter'] ?? null,
                 ],
-                'total'   => $result->count(),
-                'data'    => $result->values(),
+                'total'   => $inventario->count(),
+                'data'    => $inventario->values(),
             ]);
 
         } catch (Throwable $e) {
@@ -110,20 +78,22 @@ class InventarioDisponibleController extends Controller
         );
 
         $data = json_decode($response->getBody(), true);
+
         return collect($data['value'] ?? []);
     }
 
     /**
-     * CON FILTROS (recibe array odata)
+     * CON FILTROS (recibe ya el array OData params listo)
      */
     private function consultarInventarioSAPConQuery(array $odataParams)
     {
         [$client, $sapBaseUrl, $cookie] = $this->loginAndBuildClient();
 
-        // quitar meta internos
-        unset($odataParams['_strategy']);
+        // ⚠️ sacar debug internos para no enviarlos a SAP
+        unset($odataParams['_debug_normalized_q'], $odataParams['_debug_tokens']);
 
         $queryString = http_build_query($odataParams, '', '&', PHP_QUERY_RFC3986);
+
         $url = $sapBaseUrl . '/sml.svc/INVENTARIO_DISPONIBLE_IA' . ($queryString ? '?' . $queryString : '');
 
         $response = $client->get($url, [
@@ -134,6 +104,7 @@ class InventarioDisponibleController extends Controller
         ]);
 
         $data = json_decode($response->getBody(), true);
+
         return collect($data['value'] ?? []);
     }
 
@@ -161,138 +132,67 @@ class InventarioDisponibleController extends Controller
         ]);
 
         $loginData = json_decode($loginResponse->getBody(), true);
+
         $cookie = 'B1SESSION=' . ($loginData['SessionId'] ?? '') . '; ROUTEID=.node1';
 
         return [$client, $sapBaseUrl, $cookie];
     }
 
     /**
-     * 🔥 Construye varios intentos de búsqueda para GARANTIZAR respuesta
+     * 🔥 QUERY INTELIGENTE + FILTROS POR CAMPOS
      */
-    private function buildODataAttempts(Request $request): array
+    private function buildODataQueryParams(Request $request): array
     {
-        // Si mandan $filter manual, lo respetas (1 solo intento)
+        $params  = [];
+        $filters = [];
+
+        // Si mandan $filter manual, se respeta
         if ($request->query('$filter')) {
-            return [[
-                '_strategy' => 'manual_filter',
-                '$filter'   => (string)$request->query('$filter'),
-                '$top'      => '200',
-            ]];
+            $params['$filter'] = (string) $request->query('$filter');
+            return $params;
         }
 
-        $rawQ = (string)$request->query('q','');
+        // ==========================================================
+        // 1) 🔎 Búsqueda libre por q (limpia + stopwords + join AND/OR)
+        // ==========================================================
+        $rawQ = (string) $request->query('q', '');
         $q    = $this->normalizeSearchText($rawQ);
 
-        $tokens = $this->extractTokens($q);
+        $tokens = [];
+        if ($q !== '') {
+            $tokens = preg_split('/\s+/', $q) ?: [];
+            $tokens = array_values(array_filter($tokens, fn($t) => strlen($t) >= 2));
 
-        // Si no hay tokens, devolvemos top con stock
-        if (empty($tokens)) {
-            return [[
-                '_strategy' => 'no_q_stock_desc',
-                '$filter'   => 'StockTotal ge 1',
-                '$orderby'  => 'StockTotal desc',
-                '$top'      => '50',
-            ]];
-        }
+            // Stopwords (para que no dañen el match)
+            $stop = [
+                'PERO','ES','QUE','VALE','PRECIO','CUANTO','CUÁNTO','CUESTA','VALOR',
+                'NECESITO','QUIERO','ME','REGALA','UNA','UN','LA','EL','LOS','LAS',
+                'DE','DEL','POR','PARA','CON','SIN','A','AL','EN','Y','O'
+            ];
+            $tokens = array_values(array_filter($tokens, fn($t) => !in_array($t, $stop, true)));
 
-        // Construimos partes contains
-        $parts = array_map(function($token){
-            $token = $this->singularizeToken($token);
-            $tokenSafe = str_replace("'", "''", $token);
-            return "(contains(DescripcionArticulo,'{$tokenSafe}') or contains(ItemCode,'{$tokenSafe}') or contains(GrupoDOB,'{$tokenSafe}'))";
-        }, $tokens);
+            // Limitar tokens para no armar filtros gigantes (ajusta si quieres)
+            $tokens = array_slice($tokens, 0, 8);
 
-        // Tokens “fuertes”: normas y patrones (NTC, ASTM, GR, A500, A36, etc.)
-        $strong = array_values(array_filter($tokens, function($t){
-            return preg_match('/^(NTC|ASTM|GR|A\d{2,4}|A500|A36|A572|ISO|DIN)\b/', $t)
-                || preg_match('/^\d{3,4}X\d{2,4}$/', $t) // 1200X6000
-                || preg_match('/^\d+(MM|M)$/', $t)       // 6M, 4MM
-                || preg_match('/^\d+$/', $t);            // 2289, 4526
-        }));
-
-        $attempts = [];
-
-        // 1) Estricto (AND) con todos
-        $attempts[] = [
-            '_strategy' => 'and_all',
-            '$filter'   => implode(' and ', $parts),
-            '$top'      => '200',
-        ];
-
-        // 2) Medio (OR) con todos (más recall)
-        $attempts[] = [
-            '_strategy' => 'or_all',
-            '$filter'   => implode(' or ', $parts),
-            '$top'      => '200',
-        ];
-
-        // 3) Suave: solo 3 tokens más largos (tienden a ser los más informativos)
-        $topTokens = $tokens;
-        usort($topTokens, fn($a,$b) => strlen($b) <=> strlen($a));
-        $topTokens = array_slice($topTokens, 0, 3);
-
-        $parts3 = array_map(function($token){
-            $token = $this->singularizeToken($token);
-            $tokenSafe = str_replace("'", "''", $token);
-            return "(contains(DescripcionArticulo,'{$tokenSafe}') or contains(ItemCode,'{$tokenSafe}') or contains(GrupoDOB,'{$tokenSafe}'))";
-        }, $topTokens);
-
-        $attempts[] = [
-            '_strategy' => 'and_top3',
-            '$filter'   => implode(' and ', $parts3),
-            '$top'      => '200',
-        ];
-
-        // 4) Solo fuertes (si existen)
-        if (!empty($strong)) {
-            $strongParts = array_map(function($token){
+            $parts = [];
+            foreach ($tokens as $token) {
                 $token = $this->singularizeToken($token);
                 $tokenSafe = str_replace("'", "''", $token);
-                return "(contains(DescripcionArticulo,'{$tokenSafe}') or contains(ItemCode,'{$tokenSafe}') or contains(GrupoDOB,'{$tokenSafe}'))";
-            }, $strong);
 
-            $attempts[] = [
-                '_strategy' => 'and_strong_only',
-                '$filter'   => implode(' and ', $strongParts),
-                '$top'      => '200',
-            ];
+                $parts[] = "(contains(DescripcionArticulo,'{$tokenSafe}') or contains(ItemCode,'{$tokenSafe}') or contains(GrupoDOB,'{$tokenSafe}'))";
+            }
+
+            if (!empty($parts)) {
+                // ✅ si son muchas palabras: OR (mejor recall)
+                // ✅ si son pocas: AND (más precisión)
+                $join = (count($parts) > 4) ? ' or ' : ' and ';
+                $filters[] = implode($join, $parts);
+            }
         }
 
-        // 5) Último intento: devolver algo útil con stock y ordenado
-        $attempts[] = [
-            '_strategy' => 'stock_desc_fallback',
-            '$filter'   => 'StockTotal ge 1',
-            '$orderby'  => 'StockTotal desc',
-            '$top'      => '50',
-        ];
-
-        return $this->applyFieldFilters($request, $attempts);
-    }
-
-    /**
-     * Extrae tokens limpios + stopwords + limita cantidad
-     */
-    private function extractTokens(string $q): array
-    {
-        $tokens = preg_split('/\s+/', $q) ?: [];
-        $tokens = array_values(array_filter($tokens, fn($t) => strlen($t) >= 2));
-
-        $stop = [
-            'PERO','ES','QUE','VALE','PRECIO','CUANTO','CUÁNTO','CUESTA','VALOR',
-            'NECESITO','QUIERO','ME','REGALA','UNA','UN','LA','EL','LOS','LAS',
-            'DE','DEL','POR','PARA','CON','SIN','A','AL','EN','Y','O'
-        ];
-        $tokens = array_values(array_filter($tokens, fn($t) => !in_array($t, $stop, true)));
-
-        // limitar para no crear filtros enormes
-        return array_slice($tokens, 0, 8);
-    }
-
-    /**
-     * Aplica filtros por campos (min/max/like/exacto) a TODOS los intentos
-     */
-    private function applyFieldFilters(Request $request, array $attempts): array
-    {
+        // ==========================================================
+        // 2) 🎯 Filtros por campos (exacto / like / min / max)
+        // ==========================================================
         $allowedFields = [
             'ItemCode'            => 'string',
             'DescripcionArticulo' => 'string',
@@ -307,56 +207,60 @@ class InventarioDisponibleController extends Controller
             'id__'                => 'number',
         ];
 
-        $extraFilters = [];
-
         foreach ($allowedFields as $field => $type) {
 
+            // Exacto: Campo=valor
             $val = $request->query($field);
             if ($val !== null && $val !== '') {
-                if ($type === 'number') $extraFilters[] = "{$field} eq " . (float)$val;
-                else {
-                    $v = str_replace("'", "''", (string)$val);
-                    $extraFilters[] = "{$field} eq '{$v}'";
+                if ($type === 'number') {
+                    $filters[] = "{$field} eq " . (float) $val;
+                } else {
+                    $v = str_replace("'", "''", (string) $val);
+                    $filters[] = "{$field} eq '{$v}'";
                 }
             }
 
+            // Like: Campo_like=valor
             $valLike = $request->query($field . '_like');
             if ($valLike !== null && $valLike !== '') {
-                $v = $this->normalizeSearchText((string)$valLike);
+                $v = $this->normalizeSearchText((string) $valLike);
                 $v = str_replace("'", "''", $v);
-                $extraFilters[] = "contains({$field},'{$v}')";
+                $filters[] = "contains({$field},'{$v}')";
             }
 
+            // Min: Campo_min
             $valMin = $request->query($field . '_min');
             if ($valMin !== null && $valMin !== '') {
-                $extraFilters[] = "{$field} ge " . (float)$valMin;
+                $filters[] = "{$field} ge " . (float) $valMin;
             }
 
+            // Max: Campo_max
             $valMax = $request->query($field . '_max');
             if ($valMax !== null && $valMax !== '') {
-                $extraFilters[] = "{$field} le " . (float)$valMax;
+                $filters[] = "{$field} le " . (float) $valMax;
             }
         }
 
-        if (empty($extraFilters)) return $attempts;
-
-        // añadir filtros extra a cada intento
-        foreach ($attempts as &$a) {
-            if (!empty($a['$filter'])) {
-                $a['$filter'] = '(' . $a['$filter'] . ') and ' . implode(' and ', $extraFilters);
-            } else {
-                $a['$filter'] = implode(' and ', $extraFilters);
-            }
+        if (!empty($filters)) {
+            $params['$filter'] = implode(' and ', $filters);
         }
 
-        return $attempts;
+        // Debug legible (NO se envía a SAP, lo quitamos antes)
+        $params['_debug_normalized_q'] = $q;
+        $params['_debug_tokens']       = $tokens;
+
+        return $params;
     }
 
+    /**
+     * 🔥 NORMALIZA TEXTO (tildes, mayúsculas, símbolos)
+     */
     private function normalizeSearchText(string $text): string
     {
         $text = trim($text);
         if ($text === '') return '';
 
+        // Ojo: el + NO llega aquí, Laravel ya lo convierte a espacio.
         $text = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $text) ?: $text;
         $text = mb_strtoupper($text, 'UTF-8');
         $text = preg_replace('/[^A-Z0-9]+/', ' ', $text);
@@ -365,6 +269,9 @@ class InventarioDisponibleController extends Controller
         return trim($text);
     }
 
+    /**
+     * 🔥 PLURAL SIMPLE (LAMINAS -> LAMINA)
+     */
     private function singularizeToken(string $token): string
     {
         if (strlen($token) > 3 && substr($token, -1) === 'S') {
